@@ -12,7 +12,14 @@ export function registerSearchTool(server: McpServer, config: Config): void {
         "Search ServiceNow's public best-practices library (mynow.servicenow.com) across Knowledge, " +
         "Best Practices, Developer Portal docs, and other indexed content. No authentication required. " +
         "Leave contentType unset to search all sources; use the 'table' field on prior results to " +
-        "discover valid contentType filter values.",
+        "discover valid contentType filter values. A natural-language content-type cue in the query " +
+        "itself (e.g. 'stream connect best practices') is detected and routed to that contentType " +
+        "filter automatically, with the cue phrase removed from the search text — see the response's " +
+        "searchedQuery/detectedContentType fields for what was actually searched. Set contentType " +
+        "explicitly to override this detection. contentType filtering only applies to a small fixed " +
+        "raw page, not the full corpus — if that filter would return nothing despite real matches " +
+        "existing (totalResults > 0), the response falls back to unfiltered results and sets " +
+        "contentTypeFilterDegraded/note rather than silently returning empty.",
       inputSchema: {
         query: z.string().min(1).describe("Search term(s)"),
         contentType: z

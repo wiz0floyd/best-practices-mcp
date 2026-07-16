@@ -9,9 +9,13 @@ export interface NormalizedSearchResult {
 
 export interface NormalizedSearchResponse {
   query: string;
+  searchedQuery: string;
+  detectedContentType: string | null;
   totalResults: number;
   results: NormalizedSearchResult[];
   contentTypeFilters: Array<{ label: string; count: number }>;
+  contentTypeFilterDegraded: boolean;
+  note: string | null;
 }
 
 export interface SearchParams {
