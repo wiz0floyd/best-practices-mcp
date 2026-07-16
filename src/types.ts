@@ -4,13 +4,14 @@ export interface NormalizedSearchResult {
   url: string;
   table: string;
   contentTypeLabel: string;
+  score: number;
 }
 
 export interface NormalizedSearchResponse {
   query: string;
-  totalResults: number | null;
+  totalResults: number;
   results: NormalizedSearchResult[];
-  warnings: string[];
+  contentTypeFilters: Array<{ label: string; count: number }>;
 }
 
 export interface SearchParams {
