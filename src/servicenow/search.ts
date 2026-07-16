@@ -1,6 +1,7 @@
 import type { Config } from "../config.js";
 import { acquireGuestSession, type GuestSession } from "./session.js";
 import type { NormalizedSearchResponse, NormalizedSearchResult, SearchParams } from "../types.js";
+import { extractContentTypeIntent } from "./intent.js";
 
 /**
  * Reverse-engineered from a Playwright network capture of mynow.servicenow.com's own search UI
@@ -150,21 +151,23 @@ function extractSearchPayload(raw: unknown): RawSearchPayload {
   return search;
 }
 
-export async function searchServiceNow(
-  config: Config,
-  params: SearchParams
-): Promise<NormalizedSearchResponse> {
+interface RawFetchResult {
+  results: NormalizedSearchResult[];
+  totalHits: number;
+}
+
+async function fetchRaw(config: Config, query: string): Promise<RawFetchResult> {
   if (!cachedSession) {
     cachedSession = await acquireGuestSession(config.instanceUrl);
   }
 
   let raw: unknown;
   try {
-    raw = await postBatch(config, cachedSession, params.query);
+    raw = await postBatch(config, cachedSession, query);
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("AUTH_EXPIRED")) {
       cachedSession = await acquireGuestSession(config.instanceUrl);
-      raw = await postBatch(config, cachedSession, params.query);
+      raw = await postBatch(config, cachedSession, query);
     } else {
       throw err;
     }
@@ -172,7 +175,7 @@ export async function searchServiceNow(
 
   const search = extractSearchPayload(raw);
 
-  let results: NormalizedSearchResult[] = search.searchResults.map((r) => ({
+  const results: NormalizedSearchResult[] = search.searchResults.map((r) => ({
     title: stripHighlight(r.title),
     snippet: r.text ? stripHighlight(r.text) : null,
     url: new URL(r.url, config.instanceUrl).toString(),
@@ -189,19 +192,65 @@ export async function searchServiceNow(
     .map((f) => ({ label: f.label, count: f.count }));
   registryUpdatedAt = Date.now();
 
-  if (params.contentType) {
-    const needle = params.contentType.toLowerCase();
-    results = results.filter(
+  return { results, totalHits: search.totalHits };
+}
+
+export async function searchServiceNow(
+  config: Config,
+  params: SearchParams
+): Promise<NormalizedSearchResponse> {
+  let searchedQuery = params.query;
+  let detectedContentType: string | null = null;
+  let effectiveContentType = params.contentType ?? null;
+
+  if (!params.contentType) {
+    const intent = extractContentTypeIntent(params.query);
+    if (intent.contentType) {
+      searchedQuery = intent.query;
+      detectedContentType = intent.contentType;
+      effectiveContentType = intent.contentType;
+    }
+  }
+
+  const fetched = await fetchRaw(config, searchedQuery);
+
+  let results = fetched.results;
+  let contentTypeFilterDegraded = false;
+  let note: string | null = null;
+
+  if (effectiveContentType) {
+    const needle = effectiveContentType.toLowerCase();
+    const filtered = results.filter(
       (r) => r.table.toLowerCase() === needle || r.contentTypeLabel.toLowerCase() === needle
     );
+
+    // The API always returns a fixed ~10-item raw page regardless of requested limit, and this
+    // filter runs client-side on that same page (no server-side facet filtering has been
+    // reverse-engineered yet — see the "ServiceNow Genius Search contentType Filtering Is
+    // Client-Side on a Fixed Page" Team-Brain gotcha). A query can have hundreds of real matches
+    // for a content type while none of them land in that one small raw page, which would
+    // otherwise look identical to a genuine zero-match query. Fall back to the unfiltered page
+    // and say so, rather than silently returning an empty result set.
+    if (filtered.length === 0 && fetched.totalHits > 0) {
+      contentTypeFilterDegraded = true;
+      note =
+        `${fetched.totalHits} total matches exist for "${searchedQuery}", but none of them were in ` +
+        `the raw result page for contentType "${effectiveContentType}" — this API only supports ` +
+        `client-side filtering of a small fixed page, not true server-side faceting. Showing ` +
+        `unfiltered results instead so nothing relevant is hidden.`;
+    } else {
+      results = filtered;
+    }
   }
 
   return {
     query: params.query,
-    totalResults: search.totalHits,
+    searchedQuery,
+    detectedContentType,
+    totalResults: fetched.totalHits,
     results: results.slice(params.offset, params.offset + params.limit),
-    contentTypeFilters: search.filters
-      .filter((f) => f.sysId !== null)
-      .map((f) => ({ label: f.label, count: f.count })),
+    contentTypeFilters: lastFacetCounts,
+    contentTypeFilterDegraded,
+    note,
   };
 }
