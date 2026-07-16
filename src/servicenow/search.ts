@@ -22,6 +22,30 @@ const SEARCH_EVAM_CONFIG_ID = "80eb579d53671010968addeeff7b1215";
 
 let cachedSession: GuestSession | null = null;
 
+/**
+ * Content-type table identifiers (e.g. "u_hi_kb_knowledge_gsdr") are raw internal sysIds, not
+ * guessable from standard ServiceNow table names — see the "ServiceNow Genius Search contentType
+ * Facets Use Raw Internal Table Names" Team-Brain gotcha. Every real search response observes a
+ * few (table, label) pairs "for free"; this registry accumulates them across calls so
+ * src/servicenow/contentTypes.ts can serve discovery from cache instead of guessing or spending an
+ * extra query.
+ */
+const contentTypeRegistry = new Map<string, string>();
+let lastFacetCounts: Array<{ label: string; count: number }> = [];
+let registryUpdatedAt: number | null = null;
+
+export function getObservedContentTypes(): Array<{ table: string; label: string }> {
+  return [...contentTypeRegistry.entries()].map(([table, label]) => ({ table, label }));
+}
+
+export function getLastFacetCounts(): Array<{ label: string; count: number }> {
+  return lastFacetCounts;
+}
+
+export function getContentTypeRegistryUpdatedAt(): number | null {
+  return registryUpdatedAt;
+}
+
 function jsonLiteral(value: unknown): { type: "JSON_LITERAL"; value: unknown } {
   return { type: "JSON_LITERAL", value };
 }
@@ -156,6 +180,14 @@ export async function searchServiceNow(
     contentTypeLabel: r.tableLabelSingular,
     score: r.score,
   }));
+
+  for (const r of results) {
+    contentTypeRegistry.set(r.table, r.contentTypeLabel);
+  }
+  lastFacetCounts = search.filters
+    .filter((f) => f.sysId !== null)
+    .map((f) => ({ label: f.label, count: f.count }));
+  registryUpdatedAt = Date.now();
 
   if (params.contentType) {
     const needle = params.contentType.toLowerCase();
