@@ -55,11 +55,27 @@ claude mcp add --scope user best-practices-mcp -- node "C:/dev/best-practices-mc
 No environment variables are required — `SN_INSTANCE_URL` defaults to
 `https://mynow.servicenow.com` and only needs overriding if pointing at a different instance.
 
+## Pagination
+
+The API returns a **fixed 10 rows per request** and pages via an opaque
+`paginationToken` (base64 of an internal offset breadcrumb, e.g. `offset:0,10`). Use `offset`
+to page through the full corpus and `limit` to control how many rows you get back:
+
+- `offset` is a row index into the full corpus (`offset=10` → second page, `offset=20` → third,
+  etc.). It's implemented by constructing a token that jumps directly to that row — the server
+  doesn't validate the breadcrumb, so any offset is random-accessible in a single request.
+- `limit` (1–50) can exceed the 10-row page size; the server is paged internally
+  (`ceil(limit / 10)` requests, following the API's own returned token after the initial jump) to
+  gather that many rows.
+- `hasMore` in the response is true when more results exist beyond `offset + limit`
+  (`offset + limit < totalResults`).
+
+Because the offset jump relies on the reverse-engineered token format, `npm run probe` exercises
+offset paging end-to-end — if the encoding ever changes, re-discover it from a fresh capture (see
+below) rather than guessing.
+
 ## Known limitations
 
-- `limit`/`offset` are applied to whatever the API returns per call (observed page size: 10).
-  True pagination via the API's own `paginationToken` isn't wired up yet — fetching results
-  beyond the first page isn't currently supported.
 - `contentType` filters client-side by matching the result's own `table` or content-type label
   — there's no separate discovery tool for valid values yet. An unfiltered search's results
   carry their own `table`/`contentTypeLabel`, which is enough to learn valid filters
