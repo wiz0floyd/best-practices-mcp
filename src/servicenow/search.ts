@@ -55,7 +55,19 @@ function stripHighlight(text: string): string {
   return text.replace(/<\/?highlight>/g, "");
 }
 
-function buildBatchBody(query: string, userToken: string) {
+/**
+ * The API's paginationToken is base64 of an internal offset breadcrumb like "offset:0,10", with
+ * '=' padding replaced by '.'. Constructing "offset:0,<n>" jumps straight to row n — the breadcrumb
+ * trail is not validated server-side (verified: "offset:0,100" returns rows 100-109 directly). This
+ * gives random-access offset paging on top of a cursor API. The page size stays fixed at 10; only
+ * the start offset is controllable. If ServiceNow ever changes this encoding, scripts/probe.ts will
+ * surface it — re-discover the format from a fresh capture rather than guessing.
+ */
+function encodeOffsetToken(offset: number): string {
+  return Buffer.from(`offset:0,${offset}`, "utf-8").toString("base64").replace(/=/g, ".");
+}
+
+function buildBatchBody(query: string, userToken: string, paginationToken: string | null) {
   return {
     batch_request_id: crypto.randomUUID(),
     enforce_order: false,
@@ -76,7 +88,7 @@ function buildBatchBody(query: string, userToken: string) {
               disableSpellCheck: jsonLiteral(false),
               locale: jsonLiteral(""),
               isDebug: jsonLiteral(false),
-              paginationToken: jsonLiteral(null),
+              paginationToken: jsonLiteral(paginationToken),
               setSemanticSearch: jsonLiteral(false),
               searchEvamConfigId: jsonLiteral(SEARCH_EVAM_CONFIG_ID),
               searchTerm: jsonLiteral(query),
@@ -108,9 +120,17 @@ interface RawSearchPayload {
   totalHits: number;
   searchResults: RawSearchResult[];
   filters: Array<{ sysId: string | null; label: string; count: number }>;
+  // Opaque cursor for the next page (base64 of an internal offset range, e.g. "offset:0,10").
+  // Empty string or absent on the last page. See scripts/probe.ts for re-verification.
+  nextPaginationToken?: string | null;
 }
 
-async function postBatch(config: Config, session: GuestSession, query: string): Promise<unknown> {
+async function postBatch(
+  config: Config,
+  session: GuestSession,
+  query: string,
+  paginationToken: string | null
+): Promise<unknown> {
   const response = await fetch(new URL(BATCH_PATH, config.instanceUrl), {
     method: "POST",
     headers: {
@@ -119,7 +139,7 @@ async function postBatch(config: Config, session: GuestSession, query: string): 
       Cookie: session.cookie,
       "X-UserToken": session.userToken,
     },
-    body: JSON.stringify(buildBatchBody(query, session.userToken)),
+    body: JSON.stringify(buildBatchBody(query, session.userToken, paginationToken)),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
@@ -156,20 +176,25 @@ interface RawFetchResult {
   results: NormalizedSearchResult[];
   totalHits: number;
   facetCounts: Array<{ label: string; count: number }>;
+  nextPaginationToken: string | null;
 }
 
-async function fetchRaw(config: Config, query: string): Promise<RawFetchResult> {
+async function fetchRaw(
+  config: Config,
+  query: string,
+  paginationToken: string | null
+): Promise<RawFetchResult> {
   if (!cachedSession) {
     cachedSession = await acquireGuestSession(config.instanceUrl);
   }
 
   let raw: unknown;
   try {
-    raw = await postBatch(config, cachedSession, query);
+    raw = await postBatch(config, cachedSession, query, paginationToken);
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("AUTH_EXPIRED")) {
       cachedSession = await acquireGuestSession(config.instanceUrl);
-      raw = await postBatch(config, cachedSession, query);
+      raw = await postBatch(config, cachedSession, query, paginationToken);
     } else {
       throw err;
     }
@@ -195,7 +220,10 @@ async function fetchRaw(config: Config, query: string): Promise<RawFetchResult> 
   lastFacetCounts = facetCounts;
   registryUpdatedAt = Date.now();
 
-  return { results, totalHits: search.totalHits, facetCounts };
+  // Empty string / absent token means there is no next page.
+  const nextPaginationToken = search.nextPaginationToken ? search.nextPaginationToken : null;
+
+  return { results, totalHits: search.totalHits, facetCounts, nextPaginationToken };
 }
 
 export async function searchServiceNow(
@@ -215,11 +243,28 @@ export async function searchServiceNow(
     }
   }
 
-  const fetched = await fetchRaw(config, searchedQuery);
+  // The API pages 10 rows at a time. Jump to `offset` with a constructed token, then follow the
+  // server's own nextPaginationToken to gather enough rows to satisfy `limit` (at most
+  // ceil(limit / 10) requests). Using the returned token for continuation keeps us off the
+  // reverse-engineered token format for everything past the initial offset jump.
+  let token: string | null = params.offset > 0 ? encodeOffsetToken(params.offset) : null;
 
-  let results = fetched.results;
+  const collected: NormalizedSearchResult[] = [];
+  let totalHits = 0;
+  let facetCounts: Array<{ label: string; count: number }> = [];
+
+  while (collected.length < params.limit) {
+    const page = await fetchRaw(config, searchedQuery, token);
+    totalHits = page.totalHits;
+    if (facetCounts.length === 0) facetCounts = page.facetCounts;
+    collected.push(...page.results);
+    // No more pages, or a page that can't advance us — stop rather than loop forever.
+    if (!page.nextPaginationToken || page.results.length === 0) break;
+    token = page.nextPaginationToken;
+  }
+
+  let results = collected;
   let contentTypeFilterDegraded = false;
-  let offsetPaginationDegraded = false;
   const notes: string[] = [];
 
   if (effectiveContentType) {
@@ -228,51 +273,39 @@ export async function searchServiceNow(
       (r) => r.table.toLowerCase() === needle || r.contentTypeLabel.toLowerCase() === needle
     );
 
-    // The API always returns a fixed ~10-item raw page regardless of requested limit, and this
-    // filter runs client-side on that same page (no server-side facet filtering has been
-    // reverse-engineered yet — see the "ServiceNow Genius Search contentType Filtering Is
-    // Client-Side on a Fixed Page" Team-Brain gotcha). A query can have hundreds of real matches
-    // for a content type while none of them land in that one small raw page, which would
-    // otherwise look identical to a genuine zero-match query. Fall back to the unfiltered page
-    // and say so, rather than silently returning an empty result set.
-    if (filtered.length === 0 && fetched.totalHits > 0) {
+    // contentType filtering is still client-side over the fetched rows (no server-side facet
+    // filtering has been reverse-engineered yet — see the "ServiceNow Genius Search contentType
+    // Filtering Is Client-Side on a Fixed Page" Team-Brain gotcha). A query can have hundreds of
+    // real matches for a content type while none land in the rows we fetched, which would otherwise
+    // look identical to a genuine zero-match query. Fall back to the unfiltered rows and say so,
+    // rather than silently returning an empty result set.
+    if (filtered.length === 0 && totalHits > 0) {
       contentTypeFilterDegraded = true;
       notes.push(
-        `${fetched.totalHits} total matches exist for "${searchedQuery}", but none of them were in ` +
-        `the raw result page for contentType "${effectiveContentType}" — this API only supports ` +
-        `client-side filtering of a small fixed page, not true server-side faceting. Showing ` +
-        `unfiltered results instead so nothing relevant is hidden.`
+        `${totalHits} total matches exist for "${searchedQuery}", but none of them were in the ` +
+        `fetched rows for contentType "${effectiveContentType}" — this API only supports client-side ` +
+        `filtering of the rows returned, not true server-side faceting. Showing unfiltered results ` +
+        `instead so nothing relevant is hidden.`
       );
     } else {
       results = filtered;
     }
   }
 
-  const paged = results.slice(params.offset, params.offset + params.limit);
-
-  // Same fixed-page constraint as above: offset only paginates within this one small raw page,
-  // not the full corpus (no paginationToken support has been reverse-engineered — see
-  // buildBatchBody's hardcoded null). An offset past the end of the page looks identical to a
-  // genuine zero-match query unless called out explicitly.
-  if (params.offset > 0 && results.length > 0 && paged.length === 0) {
-    offsetPaginationDegraded = true;
-    notes.push(
-      `offset=${params.offset} returned no results even though ${results.length} were available on ` +
-      `this raw page (and ${fetched.totalHits} total matches may exist upstream). This API returns a ` +
-      `small fixed-size raw page rather than true paginated results, so offset only paginates within ` +
-      `that page, not the full corpus.`
-    );
-  }
+  const paged = results.slice(0, params.limit);
+  // Corpus-level signal: are there rows beyond this window? Based on totalHits so it doesn't depend
+  // on the token format. (When contentType filtering is applied this still reflects the raw corpus.)
+  const hasMore = params.offset + params.limit < totalHits;
 
   return {
     query: params.query,
     searchedQuery,
     detectedContentType,
-    totalResults: fetched.totalHits,
+    totalResults: totalHits,
     results: paged,
-    contentTypeFilters: fetched.facetCounts,
+    contentTypeFilters: facetCounts,
     contentTypeFilterDegraded,
-    offsetPaginationDegraded,
+    hasMore,
     note: notes.length > 0 ? notes.join(" ") : null,
   };
 }

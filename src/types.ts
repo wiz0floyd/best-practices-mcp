@@ -15,7 +15,8 @@ export interface NormalizedSearchResponse {
   results: NormalizedSearchResult[];
   contentTypeFilters: Array<{ label: string; count: number }>;
   contentTypeFilterDegraded: boolean;
-  offsetPaginationDegraded: boolean;
+  // True when more results exist beyond offset + limit (i.e. offset + limit < totalResults).
+  hasMore: boolean;
   note: string | null;
 }
 

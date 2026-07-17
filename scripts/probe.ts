@@ -25,10 +25,23 @@ async function main() {
 
   console.log(`totalResults: ${result.totalResults}`);
   console.log(`returned: ${result.results.length}`);
+  console.log(`hasMore: ${result.hasMore}`);
   console.log("content type filters:", result.contentTypeFilters.map((f) => `${f.label} (${f.count})`).join(", "));
   console.log("\nFirst few titles:");
   for (const r of result.results.slice(0, 5)) {
     console.log(`  - [${r.contentTypeLabel}] ${r.title} (score ${r.score.toFixed(1)})`);
+  }
+
+  // Re-verify offset paging: page 2 should differ from page 1 with a stable totalResults.
+  if (result.hasMore) {
+    const page2 = await searchServiceNow(config, { query, limit: 10, offset: 10 });
+    const ids1 = result.results.map((r) => r.url).join(",");
+    const ids2 = page2.results.map((r) => r.url).join(",");
+    console.log(
+      `\nPage 2 (offset=10): returned ${page2.results.length}, totalResults ${page2.totalResults} ` +
+      `(stable: ${page2.totalResults === result.totalResults}), differs from page 1: ${ids1 !== ids2}, ` +
+      `hasMore: ${page2.hasMore}`
+    );
   }
 
   mkdirSync(".probe-output", { recursive: true });
