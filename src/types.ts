@@ -15,6 +15,7 @@ export interface NormalizedSearchResponse {
   results: NormalizedSearchResult[];
   contentTypeFilters: Array<{ label: string; count: number }>;
   contentTypeFilterDegraded: boolean;
+  offsetPaginationDegraded: boolean;
   note: string | null;
 }
 

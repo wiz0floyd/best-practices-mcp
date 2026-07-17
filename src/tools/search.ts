@@ -16,18 +16,21 @@ export function registerSearchTool(server: McpServer, config: Config): void {
         "itself (e.g. 'stream connect best practices') is detected and routed to that contentType " +
         "filter automatically, with the cue phrase removed from the search text — see the response's " +
         "searchedQuery/detectedContentType fields for what was actually searched. Set contentType " +
-        "explicitly to override this detection. contentType filtering only applies to a small fixed " +
-        "raw page, not the full corpus — if that filter would return nothing despite real matches " +
-        "existing (totalResults > 0), the response falls back to unfiltered results and sets " +
-        "contentTypeFilterDegraded/note rather than silently returning empty.",
+        "explicitly to override this detection. contentType filtering, and offset-based paging, both " +
+        "only apply to a small fixed raw page, not the full corpus — if a filter would return nothing " +
+        "despite real matches existing (totalResults > 0), or an offset lands past the end of that " +
+        "page, the response falls back to unfiltered/in-page results and sets " +
+        "contentTypeFilterDegraded/offsetPaginationDegraded/note rather than silently returning empty.",
       inputSchema: {
-        query: z.string().min(1).describe("Search term(s)"),
+        query: z.string().trim().min(1).describe("Search term(s)"),
         contentType: z
           .string()
           .optional()
           .describe(
-            "Optional table/source filter (e.g. 'kb_knowledge', 'sn_communities_post'). " +
-              "Leave unset to search all sources."
+            "Optional content-type filter. Values are raw internal table sysIds (e.g. " +
+              "'u_hi_kb_knowledge_gsdr'), not guessable from standard ServiceNow table names — a " +
+              "wrong guess silently returns zero results instead of erroring. Call " +
+              "servicenow_list_content_types first to get real values. Leave unset to search all sources."
           ),
         limit: z.number().int().min(1).max(50).optional().default(10),
         offset: z.number().int().min(0).optional().default(0),
