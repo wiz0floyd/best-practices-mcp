@@ -1,4 +1,4 @@
-import type { Config } from "../config.js";
+import { FETCH_TIMEOUT_MS, type Config } from "../config.js";
 import { acquireGuestSession, type GuestSession } from "./session.js";
 import type { NormalizedSearchResponse, NormalizedSearchResult, SearchParams } from "../types.js";
 import { extractContentTypeIntent } from "./intent.js";
@@ -120,6 +120,7 @@ async function postBatch(config: Config, session: GuestSession, query: string): 
       "X-UserToken": session.userToken,
     },
     body: JSON.stringify(buildBatchBody(query, session.userToken)),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
   if (response.status === 401 || response.status === 403) {
@@ -154,6 +155,7 @@ function extractSearchPayload(raw: unknown): RawSearchPayload {
 interface RawFetchResult {
   results: NormalizedSearchResult[];
   totalHits: number;
+  facetCounts: Array<{ label: string; count: number }>;
 }
 
 async function fetchRaw(config: Config, query: string): Promise<RawFetchResult> {
@@ -187,12 +189,13 @@ async function fetchRaw(config: Config, query: string): Promise<RawFetchResult> 
   for (const r of results) {
     contentTypeRegistry.set(r.table, r.contentTypeLabel);
   }
-  lastFacetCounts = search.filters
+  const facetCounts = search.filters
     .filter((f) => f.sysId !== null)
     .map((f) => ({ label: f.label, count: f.count }));
+  lastFacetCounts = facetCounts;
   registryUpdatedAt = Date.now();
 
-  return { results, totalHits: search.totalHits };
+  return { results, totalHits: search.totalHits, facetCounts };
 }
 
 export async function searchServiceNow(
@@ -216,7 +219,8 @@ export async function searchServiceNow(
 
   let results = fetched.results;
   let contentTypeFilterDegraded = false;
-  let note: string | null = null;
+  let offsetPaginationDegraded = false;
+  const notes: string[] = [];
 
   if (effectiveContentType) {
     const needle = effectiveContentType.toLowerCase();
@@ -233,14 +237,31 @@ export async function searchServiceNow(
     // and say so, rather than silently returning an empty result set.
     if (filtered.length === 0 && fetched.totalHits > 0) {
       contentTypeFilterDegraded = true;
-      note =
+      notes.push(
         `${fetched.totalHits} total matches exist for "${searchedQuery}", but none of them were in ` +
         `the raw result page for contentType "${effectiveContentType}" — this API only supports ` +
         `client-side filtering of a small fixed page, not true server-side faceting. Showing ` +
-        `unfiltered results instead so nothing relevant is hidden.`;
+        `unfiltered results instead so nothing relevant is hidden.`
+      );
     } else {
       results = filtered;
     }
+  }
+
+  const paged = results.slice(params.offset, params.offset + params.limit);
+
+  // Same fixed-page constraint as above: offset only paginates within this one small raw page,
+  // not the full corpus (no paginationToken support has been reverse-engineered — see
+  // buildBatchBody's hardcoded null). An offset past the end of the page looks identical to a
+  // genuine zero-match query unless called out explicitly.
+  if (params.offset > 0 && results.length > 0 && paged.length === 0) {
+    offsetPaginationDegraded = true;
+    notes.push(
+      `offset=${params.offset} returned no results even though ${results.length} were available on ` +
+      `this raw page (and ${fetched.totalHits} total matches may exist upstream). This API returns a ` +
+      `small fixed-size raw page rather than true paginated results, so offset only paginates within ` +
+      `that page, not the full corpus.`
+    );
   }
 
   return {
@@ -248,9 +269,10 @@ export async function searchServiceNow(
     searchedQuery,
     detectedContentType,
     totalResults: fetched.totalHits,
-    results: results.slice(params.offset, params.offset + params.limit),
-    contentTypeFilters: lastFacetCounts,
+    results: paged,
+    contentTypeFilters: fetched.facetCounts,
     contentTypeFilterDegraded,
-    note,
+    offsetPaginationDegraded,
+    note: notes.length > 0 ? notes.join(" ") : null,
   };
 }

@@ -13,13 +13,16 @@
  * specific terms get penalized for narrowing the result set). See the "ServiceNow Genius Search
  * Score Comparison Across Queries Is Not a Relevance Signal" Team-Brain gotcha.
  */
+// Sorted longest-pattern-first below so that, if a query happens to contain more than one cue
+// phrase, the first-match-wins loop in extractContentTypeIntent naturally prefers the more
+// specific/longer one instead of whichever was listed first — no separate ranking pass needed.
 const INTENT_PHRASES: Array<{ phrase: RegExp; label: string }> = [
   { phrase: /\bbest practices?\b/i, label: "Best Practices" },
   { phrase: /\bdeveloper portal\b/i, label: "Developer Portal" },
   { phrase: /\b(?:now )?community\b/i, label: "Now Community" },
   { phrase: /\b(?:servicenow )?university\b/i, label: "ServiceNow University" },
   { phrase: /\bproduct documentation\b/i, label: "Product Documentation" },
-];
+].sort((a, b) => b.phrase.source.length - a.phrase.source.length);
 
 export interface ContentTypeIntent {
   query: string;

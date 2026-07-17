@@ -1,3 +1,5 @@
+export const FETCH_TIMEOUT_MS = 30_000;
+
 export interface Config {
   instanceUrl: string;
 }

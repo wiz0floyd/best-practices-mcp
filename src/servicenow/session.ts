@@ -7,6 +7,8 @@
  * g_ck -> POST /api/now/v1/batch with both) returning real, correctly-scored results.
  */
 
+import { FETCH_TIMEOUT_MS } from "../config.js";
+
 export interface GuestSession {
   cookie: string;
   userToken: string;
@@ -15,7 +17,9 @@ export interface GuestSession {
 const GCK_PATTERN = /window\.g_ck\s*=\s*'([^']+)'/;
 
 export async function acquireGuestSession(instanceUrl: string): Promise<GuestSession> {
-  const response = await fetch(new URL("/now/best-practices/home", instanceUrl));
+  const response = await fetch(new URL("/now/best-practices/home", instanceUrl), {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(
       `Failed to establish a guest session against ${instanceUrl} (HTTP ${response.status}).`
