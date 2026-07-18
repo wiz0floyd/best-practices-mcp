@@ -67,7 +67,18 @@ function encodeOffsetToken(offset: number): string {
   return Buffer.from(`offset:0,${offset}`, "utf-8").toString("base64").replace(/=/g, ".");
 }
 
-function buildBatchBody(query: string, userToken: string, paginationToken: string | null) {
+// Default field set for servicenow_search's own normal path. Callers probing for full-content
+// retrieval (see scripts/probe-content-fields.ts) can request a wider field superset — this list
+// is client-controlled and untested beyond these three, see that probe script for findings.
+const DEFAULT_REQUESTED_FIELDS = ["title", "text", "sys_id"];
+
+function buildBatchBody(
+  query: string,
+  userToken: string,
+  paginationToken: string | null,
+  fields: string[] = DEFAULT_REQUESTED_FIELDS,
+  semanticSearch = false
+) {
   return {
     batch_request_id: crypto.randomUUID(),
     enforce_order: false,
@@ -83,13 +94,13 @@ function buildBatchBody(query: string, userToken: string, paginationToken: strin
             type: "GRAPHQL",
             definitionSysId: SEARCH_DEFINITION_SYS_ID,
             inputValues: {
-              requestedFields: jsonLiteral(JSON.stringify({ global: ["title", "text", "sys_id"] })),
+              requestedFields: jsonLiteral(JSON.stringify({ global: fields })),
               facetFilters: jsonLiteral("[]"),
               disableSpellCheck: jsonLiteral(false),
               locale: jsonLiteral(""),
               isDebug: jsonLiteral(false),
               paginationToken: jsonLiteral(paginationToken),
-              setSemanticSearch: jsonLiteral(false),
+              setSemanticSearch: jsonLiteral(semanticSearch),
               searchEvamConfigId: jsonLiteral(SEARCH_EVAM_CONFIG_ID),
               searchTerm: jsonLiteral(query),
               sortOptions: jsonLiteral(""),
@@ -129,7 +140,9 @@ async function postBatch(
   config: Config,
   session: GuestSession,
   query: string,
-  paginationToken: string | null
+  paginationToken: string | null,
+  fields: string[] = DEFAULT_REQUESTED_FIELDS,
+  semanticSearch = false
 ): Promise<unknown> {
   const response = await fetch(new URL(BATCH_PATH, config.instanceUrl), {
     method: "POST",
@@ -139,7 +152,7 @@ async function postBatch(
       Cookie: session.cookie,
       "X-UserToken": session.userToken,
     },
-    body: JSON.stringify(buildBatchBody(query, session.userToken, paginationToken)),
+    body: JSON.stringify(buildBatchBody(query, session.userToken, paginationToken, fields, semanticSearch)),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
@@ -179,34 +192,66 @@ interface RawFetchResult {
   nextPaginationToken: string | null;
 }
 
-async function fetchRaw(
+// Session-managed fetch + retry-once-on-expiry, factored out so probe scripts can request a
+// custom field superset (see scripts/probe-content-fields.ts) through the same auth plumbing
+// without duplicating the retry logic.
+async function fetchSearchPayload(
   config: Config,
   query: string,
-  paginationToken: string | null
-): Promise<RawFetchResult> {
+  paginationToken: string | null,
+  fields: string[] = DEFAULT_REQUESTED_FIELDS,
+  semanticSearch = false
+): Promise<RawSearchPayload> {
   if (!cachedSession) {
     cachedSession = await acquireGuestSession(config.instanceUrl);
   }
 
   let raw: unknown;
   try {
-    raw = await postBatch(config, cachedSession, query, paginationToken);
+    raw = await postBatch(config, cachedSession, query, paginationToken, fields, semanticSearch);
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("AUTH_EXPIRED")) {
       cachedSession = await acquireGuestSession(config.instanceUrl);
-      raw = await postBatch(config, cachedSession, query, paginationToken);
+      raw = await postBatch(config, cachedSession, query, paginationToken, fields, semanticSearch);
     } else {
       throw err;
     }
   }
 
-  const search = extractSearchPayload(raw);
+  return extractSearchPayload(raw);
+}
+
+/**
+ * Exposed for scripts/probe-content-fields.ts to test whether requesting additional fields
+ * (e.g. "body", "content", "html") or enabling semantic search (which populates the schema's
+ * existing but normally-empty `passages`/`childDocs`/semantic fields) returns full article
+ * content inline — untested/unverified as of this writing, see that script for findings. Returns
+ * the raw, un-normalized payload so the probe can inspect whatever fields actually came back
+ * rather than being limited to the fixed NormalizedSearchResult shape.
+ */
+export async function fetchRawSearchPayloadForProbe(
+  config: Config,
+  query: string,
+  fields: string[],
+  paginationToken: string | null = null,
+  semanticSearch = false
+): Promise<RawSearchPayload> {
+  return fetchSearchPayload(config, query, paginationToken, fields, semanticSearch);
+}
+
+async function fetchRaw(
+  config: Config,
+  query: string,
+  paginationToken: string | null
+): Promise<RawFetchResult> {
+  const search = await fetchSearchPayload(config, query, paginationToken);
 
   const results: NormalizedSearchResult[] = search.searchResults.map((r) => ({
     title: stripHighlight(r.title),
     snippet: r.text ? stripHighlight(r.text) : null,
     url: new URL(r.url, config.instanceUrl).toString(),
     table: r.table,
+    sysId: r.sysId,
     contentTypeLabel: r.tableLabelSingular,
     score: r.score,
   }));

@@ -3,6 +3,7 @@ export interface NormalizedSearchResult {
   snippet: string | null;
   url: string;
   table: string;
+  sysId: string;
   contentTypeLabel: string;
   score: number;
 }

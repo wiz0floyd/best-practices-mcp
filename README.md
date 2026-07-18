@@ -74,6 +74,25 @@ Because the offset jump relies on the reverse-engineered token format, `npm run 
 offset paging end-to-end — if the encoding ever changes, re-discover it from a fresh capture (see
 below) rather than guessing.
 
+## Downloading documents
+
+Search itself needs no auth, but the actual file behind a file-backed result (presentations,
+workbooks, docs) is gated behind a real ServiceNow ID / Okta SSO login — confirmed live via
+Playwright (see `scripts/probe-headed-login.ts`).
+
+1. **`npm run login`** — opens a real, visible browser window. Complete the ServiceNow ID / Okta
+   login by hand; the script detects when you're back on the instance and saves the session to
+   `.auth/servicenow-storage-state.json` (gitignored — this is a live credential). This is a
+   standalone script, never an MCP tool call, since a headed browser waiting minutes on human
+   SSO/MFA input has no business running inside a tool-call timeout.
+2. **`servicenow_download_document`** (MCP tool) — pass a `servicenow_search` result's `url`. No
+   browser is launched here: it replays the captured session's cookies against the record's
+   classic XML export view (`<table>.do?...&XML`, confirmed to accept cookie replay outside the
+   browser), extracts the record's own file-location field, and fetches that file directly (often
+   a separate public CDN, no ServiceNow auth needed for that hop). If the session is missing or
+   has expired, it returns a clear error telling you to re-run `npm run login` — it never launches
+   a browser itself.
+
 ## Known limitations
 
 - `contentType` filters client-side by matching the result's own `table` or content-type label

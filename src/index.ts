@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { registerSearchTool } from "./tools/search.js";
 import { registerContentTypesTool } from "./tools/contentTypes.js";
+import { registerDownloadTool } from "./tools/download.js";
 
 const config = loadConfig();
 
@@ -13,6 +14,7 @@ const server = new McpServer({
 
 registerSearchTool(server, config);
 registerContentTypesTool(server, config);
+registerDownloadTool(server, config);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
