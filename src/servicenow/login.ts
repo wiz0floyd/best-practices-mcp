@@ -5,9 +5,12 @@
  * classic .do?...&XML record view accepts cookie replay outside the browser). See
  * scripts/probe-headed-login.ts for the original spike this was hardened from.
  *
- * Never call this from inside an MCP tool — a headed browser waiting minutes on human SSO/MFA
- * input has no business running inside a tool-call timeout. It's invoked only from the standalone
- * scripts/login.ts CLI (`npm run login`).
+ * Two callers, both fine: the standalone scripts/login.ts CLI (`npm run login`), which awaits
+ * this directly, and src/tools/login.ts's servicenow_login MCP tool, which fires this off
+ * un-awaited (see src/servicenow/loginState.ts) since a headed browser waiting minutes on human
+ * SSO/MFA input has no business blocking a tool-call response. Logging below goes to stderr
+ * (console.error), never stdout — stdout is the JSON-RPC channel for the MCP server's
+ * StdioServerTransport, and any stray console.log there would corrupt the protocol stream.
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -36,22 +39,22 @@ export async function captureServiceNowSession(config: Config, targetUrl?: strin
     const context = await browser.newContext();
     const page = await context.newPage();
 
-    console.log(`Opening ${target} ...`);
+    console.error(`Opening ${target} ...`);
     await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
     if (!isBackOnInstance(new URL(page.url()), instanceHostname)) {
-      console.log(
+      console.error(
         "\n>>> Please complete the real ServiceNow ID / Okta login in the visible browser window now. <<<\n" +
           `Waiting up to ${LOGIN_TIMEOUT_MS / 60_000} minutes for the browser to return to ${instanceHostname}...\n`
       );
       await page.waitForURL((url) => isBackOnInstance(url, instanceHostname), { timeout: LOGIN_TIMEOUT_MS });
     } else {
-      console.log("Already on the instance (no login prompt shown) — continuing.");
+      console.error("Already on the instance (no login prompt shown) — continuing.");
     }
 
     mkdirSync(dirname(config.authStatePath), { recursive: true });
     await context.storageState({ path: config.authStatePath });
-    console.log(`Session captured to ${config.authStatePath}`);
+    console.error(`Session captured to ${config.authStatePath}`);
   } finally {
     await browser.close();
   }

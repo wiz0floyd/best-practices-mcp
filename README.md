@@ -80,11 +80,13 @@ Search itself needs no auth, but the actual file behind a file-backed result (pr
 workbooks, docs) is gated behind a real ServiceNow ID / Okta SSO login — confirmed live via
 Playwright (see `scripts/probe-headed-login.ts`).
 
-1. **`npm run login`** — opens a real, visible browser window. Complete the ServiceNow ID / Okta
-   login by hand; the script detects when you're back on the instance and saves the session to
-   `.auth/servicenow-storage-state.json` (gitignored — this is a live credential). This is a
-   standalone script, never an MCP tool call, since a headed browser waiting minutes on human
-   SSO/MFA input has no business running inside a tool-call timeout.
+1. **`servicenow_login`** (MCP tool) or **`npm run login`** (standalone script) — both open a real,
+   visible browser window and save the resulting session to
+   `.auth/servicenow-storage-state.json` (gitignored — this is a live credential) once you
+   complete the ServiceNow ID / Okta login by hand. The MCP tool returns immediately — a headed
+   browser waiting minutes on human SSO/MFA input has no business blocking a tool-call response —
+   so poll **`servicenow_login_status`** to see when the capture finishes (or failed) and whether a
+   session file currently exists on disk.
 2. **`servicenow_download_document`** (MCP tool) — pass a `servicenow_search` result's `url`. Two
    mechanisms depending on content type, both starting from the same cookie-replayed
    `<table>.do?...&XML` record fetch (confirmed to accept cookie replay outside the browser):
@@ -103,8 +105,8 @@ Playwright (see `scripts/probe-headed-login.ts`).
      client-side at click time. A short-lived **headless** browser (reusing the captured session,
      no new login) drives the actual download click to mint that token, then a plain fetch uses it
      to pull the file bytes — see `scripts/probe-bpl-token-capture.ts` for how this was confirmed.
-   If the session is missing or has expired, either path returns a clear error telling you to
-   re-run `npm run login` — no path ever launches a browser other than the brief, automated one
+   If the session is missing or has expired, either path returns a clear error telling you to call
+   `servicenow_login` again — no path ever launches a browser other than the brief, automated one
    used to mint a Best Practices Library token.
 
 ## Known limitations
