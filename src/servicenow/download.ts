@@ -8,14 +8,20 @@
  *   directly (often a separately-hosted public CDN link). See scripts/probe-headed-login.ts.
  *
  * - Best Practices Library assets (`u_x_snc_accel_asset_file_gsdr` — this project's primary
- *   target content type): the actual file is served by a completely separate API
- *   (`api.servicenow.com/bpl/v1/attachment/<id>`) gated behind a real Okta-issued OAuth Bearer
- *   token that's minted client-side at click time — plain cookie replay against that API 401s.
- *   Nothing usable is cached from login either. The token itself IS replayable outside the
- *   browser once minted (confirmed: a captured token successfully re-fetched the same file via a
- *   separate plain curl call) — so a short-lived headless browser reusing the captured session is
- *   used only to mint one token per download, not to fetch the file itself. See
- *   scripts/probe-bpl-token-capture.ts for how this was confirmed.
+ *   target content type): the record's own `x_snc_nl_data_extr_file_content` field carries the
+ *   full extracted text of the underlying file (confirmed on both a .docx and a .pptx source —
+ *   slide-by-slide for the latter) via the same plain cookie-replay XML fetch, no browser needed.
+ *   This is the preferred path — it's what an agent actually wants (readable content), not bytes.
+ *   Only when that field is empty does this fall back to the original file's binary bytes, which
+ *   are served by a completely separate API (`api.servicenow.com/bpl/v1/attachment/<id>`) gated
+ *   behind a real Okta-issued OAuth Bearer token minted client-side at click time — plain cookie
+ *   replay against that API 401s, and nothing usable is cached from login either. The token IS
+ *   replayable outside the browser once minted (confirmed: a captured token successfully
+ *   re-fetched the same file via a separate plain curl call) — so a short-lived headless browser
+ *   reusing the captured session is used only to mint one token, not to fetch the file itself.
+ *   See scripts/probe-bpl-token-capture.ts for how this was confirmed. A human who wants the
+ *   original formatted file directly can also just open the returned `sourceUrl` in their own
+ *   browser and complete their own login — no need to go through this tool at all for that case.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
@@ -40,6 +46,10 @@ export interface DownloadedDocument {
   filename: string;
   contentType: string;
   sizeBytes: number;
+  // Present for Best Practices Library assets: the human-facing asset page. A human who wants the
+  // original formatted file can open this directly and complete their own browser login — this
+  // tool never needs to be involved for that case.
+  sourceUrl?: string;
 }
 
 function buildCookieHeader(authStatePath: string, instanceHostname: string): string {
@@ -51,8 +61,17 @@ function buildCookieHeader(authStatePath: string, instanceHostname: string): str
 }
 
 function extractField(xml: string, tagName: string): string | null {
-  const match = xml.match(new RegExp(`<${tagName}>([^<]*)</${tagName}>`));
+  const match = xml.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`));
   return match ? match[1].trim() || null : null;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 // The record's own fields carry the real file location (confirmed live on u_dotcom_gsdr: field
@@ -152,6 +171,19 @@ async function downloadBplAsset(config: Config, xml: string, cookieHeader: strin
   if (!hri) {
     throw new Error("Best Practices Library record is missing u_human_readable_identifier.");
   }
+  const assetPageUrl = new URL(`/now/best-practices/assets/${hri}`, config.instanceUrl).toString();
+
+  // Preferred path: the record's own extracted-text field, no browser needed. Confirmed live on
+  // both a .docx and a .pptx source — this is what an agent actually wants (readable content),
+  // and it's dramatically simpler/more reliable than the OAuth/browser binary path below.
+  const extractedText = extractField(xml, "x_snc_nl_data_extr_file_content");
+  if (extractedText) {
+    const fileName = extractField(xml, "u_file_name") ?? hri;
+    const text = decodeXmlEntities(extractedText);
+    const bytes = Buffer.from(text, "utf-8");
+    const path = saveBytes(config, bytes, `${fileName}.txt`);
+    return { path, filename: `${fileName}.txt`, contentType: "text/plain", sizeBytes: bytes.length, sourceUrl: assetPageUrl };
+  }
 
   const assetApiUrl = new URL(`/api/x_snc_bpl_user_exp/best_practices/cached/assets/${hri}`, config.instanceUrl).toString();
   const assetResponse = await fetch(assetApiUrl, {
@@ -188,7 +220,7 @@ async function downloadBplAsset(config: Config, xml: string, cookieHeader: strin
   const filename = filenameFromUrl(fileResponse.url, fileResponse.headers.get("content-disposition"));
   const path = saveBytes(config, bytes, filename);
 
-  return { path, filename, contentType, sizeBytes: bytes.length };
+  return { path, filename, contentType, sizeBytes: bytes.length, sourceUrl: assetPageUrl };
 }
 
 async function downloadGenericGsdrFile(config: Config, resultUrl: string, xml: string): Promise<DownloadedDocument> {

@@ -92,7 +92,13 @@ Playwright (see `scripts/probe-headed-login.ts`).
      record's own fields carry the real file location directly (often a separate public CDN, no
      ServiceNow auth needed for that hop).
    - **Best Practices Library assets** (`u_x_snc_accel_asset_file_gsdr` — this project's primary
-     target content type): the real file lives behind a separate API
+     target content type): the record's own `x_snc_nl_data_extr_file_content` field carries the
+     full extracted text of the underlying file (confirmed for both `.docx` and `.pptx` sources)
+     — this is preferred, since it's what an agent actually wants and needs no browser at all.
+     The response also includes `sourceUrl` (the human-facing asset page) for anyone who wants the
+     original formatted file — just open it in your own browser and complete your own login, no
+     need to go through this tool. Only when that field is empty does this fall back to the real
+     file's binary bytes, which live behind a separate API
      (`api.servicenow.com/bpl/v1/attachment/<id>`) gated by a real Okta OAuth Bearer token minted
      client-side at click time. A short-lived **headless** browser (reusing the captured session,
      no new login) drives the actual download click to mint that token, then a plain fetch uses it
