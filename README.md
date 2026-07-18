@@ -85,13 +85,21 @@ Playwright (see `scripts/probe-headed-login.ts`).
    `.auth/servicenow-storage-state.json` (gitignored — this is a live credential). This is a
    standalone script, never an MCP tool call, since a headed browser waiting minutes on human
    SSO/MFA input has no business running inside a tool-call timeout.
-2. **`servicenow_download_document`** (MCP tool) — pass a `servicenow_search` result's `url`. No
-   browser is launched here: it replays the captured session's cookies against the record's
-   classic XML export view (`<table>.do?...&XML`, confirmed to accept cookie replay outside the
-   browser), extracts the record's own file-location field, and fetches that file directly (often
-   a separate public CDN, no ServiceNow auth needed for that hop). If the session is missing or
-   has expired, it returns a clear error telling you to re-run `npm run login` — it never launches
-   a browser itself.
+2. **`servicenow_download_document`** (MCP tool) — pass a `servicenow_search` result's `url`. Two
+   mechanisms depending on content type, both starting from the same cookie-replayed
+   `<table>.do?...&XML` record fetch (confirmed to accept cookie replay outside the browser):
+   - Most content types (e.g. marketing decks, `u_dotcom_gsdr`): no browser needed at all — the
+     record's own fields carry the real file location directly (often a separate public CDN, no
+     ServiceNow auth needed for that hop).
+   - **Best Practices Library assets** (`u_x_snc_accel_asset_file_gsdr` — this project's primary
+     target content type): the real file lives behind a separate API
+     (`api.servicenow.com/bpl/v1/attachment/<id>`) gated by a real Okta OAuth Bearer token minted
+     client-side at click time. A short-lived **headless** browser (reusing the captured session,
+     no new login) drives the actual download click to mint that token, then a plain fetch uses it
+     to pull the file bytes — see `scripts/probe-bpl-token-capture.ts` for how this was confirmed.
+   If the session is missing or has expired, either path returns a clear error telling you to
+   re-run `npm run login` — no path ever launches a browser other than the brief, automated one
+   used to mint a Best Practices Library token.
 
 ## Known limitations
 
