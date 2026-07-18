@@ -74,6 +74,41 @@ Because the offset jump relies on the reverse-engineered token format, `npm run 
 offset paging end-to-end — if the encoding ever changes, re-discover it from a fresh capture (see
 below) rather than guessing.
 
+## Downloading documents
+
+Search itself needs no auth, but the actual file behind a file-backed result (presentations,
+workbooks, docs) is gated behind a real ServiceNow ID / Okta SSO login — confirmed live via
+Playwright (see `scripts/probe-headed-login.ts`).
+
+1. **`servicenow_login`** (MCP tool) or **`npm run login`** (standalone script) — both open a real,
+   visible browser window and save the resulting session to
+   `.auth/servicenow-storage-state.json` (gitignored — this is a live credential) once you
+   complete the ServiceNow ID / Okta login by hand. The MCP tool returns immediately — a headed
+   browser waiting minutes on human SSO/MFA input has no business blocking a tool-call response —
+   so poll **`servicenow_login_status`** to see when the capture finishes (or failed) and whether a
+   session file currently exists on disk.
+2. **`servicenow_download_document`** (MCP tool) — pass a `servicenow_search` result's `url`. Two
+   mechanisms depending on content type, both starting from the same cookie-replayed
+   `<table>.do?...&XML` record fetch (confirmed to accept cookie replay outside the browser):
+   - Most content types (e.g. marketing decks, `u_dotcom_gsdr`): no browser needed at all — the
+     record's own fields carry the real file location directly (often a separate public CDN, no
+     ServiceNow auth needed for that hop).
+   - **Best Practices Library assets** (`u_x_snc_accel_asset_file_gsdr` — this project's primary
+     target content type): the record's own `x_snc_nl_data_extr_file_content` field carries the
+     full extracted text of the underlying file (confirmed for both `.docx` and `.pptx` sources)
+     — this is preferred, since it's what an agent actually wants and needs no browser at all.
+     The response also includes `sourceUrl` (the human-facing asset page) for anyone who wants the
+     original formatted file — just open it in your own browser and complete your own login, no
+     need to go through this tool. Only when that field is empty does this fall back to the real
+     file's binary bytes, which live behind a separate API
+     (`api.servicenow.com/bpl/v1/attachment/<id>`) gated by a real Okta OAuth Bearer token minted
+     client-side at click time. A short-lived **headless** browser (reusing the captured session,
+     no new login) drives the actual download click to mint that token, then a plain fetch uses it
+     to pull the file bytes — see `scripts/probe-bpl-token-capture.ts` for how this was confirmed.
+   If the session is missing or has expired, either path returns a clear error telling you to call
+   `servicenow_login` again — no path ever launches a browser other than the brief, automated one
+   used to mint a Best Practices Library token.
+
 ## Known limitations
 
 - `contentType` filters client-side by matching the result's own `table` or content-type label

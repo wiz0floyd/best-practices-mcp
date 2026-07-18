@@ -11,10 +11,17 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "probe": "tsx scripts/probe.ts"
+    "probe": "tsx scripts/probe.ts",
+    "probe-content-fields": "tsx scripts/probe-content-fields.ts",
+    "probe-content-page": "tsx scripts/probe-content-page.ts",
+    "probe-headed-login": "tsx scripts/probe-headed-login.ts",
+    "login": "tsx scripts/login.ts",
+    "probe-bpl-download": "tsx scripts/probe-bpl-download.ts",
+    "probe-bpl-token-capture": "tsx scripts/probe-bpl-token-capture.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "playwright": "^1.61.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {
